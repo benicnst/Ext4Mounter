@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- VZ.framework: required for VZVirtualMachine -->
+    <key>com.apple.security.virtualization</key>
+    <true/>
+    <!-- NFS TCP connection to localhost vsock proxy -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- No sandbox: needed to receive FD from XPC helper via UNIX socket -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+</dict>
+</plist>

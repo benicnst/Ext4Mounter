@@ -1,0 +1,9 @@
+.DS_Store
+.build/
+build/
+.swiftpm/
+Package.resolved
+app/*.app
+app/*.dSYM
+*.xcuserstate
+*.swp
