@@ -32,7 +32,7 @@ public final class EngineLog {
         handle?.closeFile(); handle = nil
         try? "".write(to: fileURL, atomically: true, encoding: .utf8)
         openHandle()
-        raw("=== Ext4Mounter v6.0 engine log — session start ===")
+        raw("=== Ext4Mounter v1.2.5 engine log — session start ===")
     }
 
     // MARK: - Write

@@ -2,7 +2,7 @@ import Foundation
 import Shared
 import Virtualization
 
-/// VZEngine v6.0 — freeze-safe Alpine Linux VM via VZ.framework.
+/// VZEngine v1.2.5 — freeze-safe Alpine Linux VM via VZ.framework.
 ///
 /// Design goals vs v3.5:
 ///   • VZVirtualMachine runs on a dedicated background serial queue (no main-thread freeze).
