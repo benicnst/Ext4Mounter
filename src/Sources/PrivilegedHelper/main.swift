@@ -1,11 +1,58 @@
 import Foundation
 import DiskArbitration
+import Darwin
 import Shared
 
-/// UltraExt4 Privileged Helper v1.2.2
+/// UltraExt4 Privileged Helper v1.2.5
 /// Adds root-level DiskArbitration approval callback to suppress the macOS
 /// "unreadable disk" dialog when Linux/ext4 drives are connected.
 /// Implements HelperProtocol via XPC MachService + SCM_RIGHTS FD passing.
+
+final class HelperLog {
+    static let shared = HelperLog()
+
+    private let fileURL: URL
+    private let lock = NSLock()
+
+    private init() {
+        let dir = URL(fileURLWithPath: "/Library/Logs/Ext4Mounter", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        self.fileURL = dir.appendingPathComponent("helper.log")
+    }
+
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        try? "".write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+
+    func write(_ message: String) {
+        let line = "[\(HelperLog.timestamp())] \(message)\n"
+        lock.lock()
+        defer { lock.unlock() }
+        let data = Data(line.utf8)
+        if let handle = try? FileHandle(forWritingTo: fileURL) {
+            defer { try? handle.close() }
+            try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: fileURL)
+        }
+        fputs(line, stderr)
+    }
+
+    private static func timestamp() -> String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "HH:mm:ss.SSS"
+        return fmt.string(from: Date())
+    }
+}
+
+@inline(__always)
+func hlog(_ message: String) {
+    HelperLog.shared.write(message)
+}
 
 // MARK: - Helper
 
@@ -16,11 +63,12 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
     private var claimedDisks: [String: DADisk] = [:]
 
     func run() {
+        HelperLog.shared.clear()
         listener = NSXPCListener(machServiceName: "com.ext4mounter.helper")
         listener?.delegate = self
         listener?.resume()
         setupDiskArbitration()
-        print("[Helper] v1.2.5 started (PID: \(getpid()))")
+        hlog("[Helper] v1.2.5 started (PID: \(getpid()))")
         RunLoop.main.run()
     }
 
@@ -33,7 +81,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
 
     private func setupDiskArbitration() {
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
-            print("[Helper] DASessionCreate failed")
+            hlog("[Helper] DASessionCreate failed")
             return
         }
         daSession = session
@@ -51,7 +99,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
             Unmanaged<Helper>.fromOpaque(ctx).takeUnretainedValue().handleDiskDisappeared(disk)
         }, ctx)
 
-        print("[Helper] DiskArbitration claim session ready (uid=\(getuid()))")
+        hlog("[Helper] DiskArbitration claim session ready (uid=\(getuid()))")
     }
 
 
@@ -59,7 +107,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         guard let desc = DADiskCopyDescription(disk) as? [String: Any] else { return }
         guard isLinuxPartitionCandidate(desc), !isKnownNonLinuxFS(desc) else { return }
         let bsd = desc[kDADiskDescriptionMediaBSDNameKey as String] as? String ?? "?"
-        print("[Helper] Linux candidate: \(bsd) — verifying in 0.5s before claim")
+        hlog("[Helper] Linux candidate: \(bsd) — verifying in 0.5s before claim")
 
         // 0.5秒後に DA を再確認する:
         // - exFAT 等: VolumeKindKey に FS 名が設定される → isKnownNonLinuxFS = true → クレームしない
@@ -68,13 +116,13 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self, let session = self.daSession else { return }
             guard let freshDisk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, bsd) else {
-                print("[Helper] \(bsd) no longer exists — skip claim")
+                hlog("[Helper] \(bsd) no longer exists — skip claim")
                 return
             }
             guard let freshDesc = DADiskCopyDescription(freshDisk) as? [String: Any] else { return }
             guard self.isLinuxPartitionCandidate(freshDesc),
                   !self.isKnownNonLinuxFS(freshDesc) else {
-                print("[Helper] \(bsd) re-identified as non-Linux FS — skipping claim")
+                hlog("[Helper] \(bsd) re-identified as non-Linux FS — skipping claim")
                 return
             }
             self.performClaim(freshDisk, bsd: bsd)
@@ -82,7 +130,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
     }
 
     private func performClaim(_ disk: DADisk, bsd: String) {
-        print("[Helper] claiming \(bsd) to suppress 'unreadable disk' dialog")
+        hlog("[Helper] claiming \(bsd) to suppress 'unreadable disk' dialog")
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         DADiskClaim(
             disk,
@@ -97,9 +145,9 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
                       let bsd = desc[kDADiskDescriptionMediaBSDNameKey as String] as? String else { return }
                 if dissenter == nil {
                     helper.claimedDisks[bsd] = disk
-                    print("[Helper] ✅ claimed \(bsd) — dialog suppressed")
+                    hlog("[Helper] ✅ claimed \(bsd) — dialog suppressed")
                 } else {
-                    print("[Helper] ⚠️ claim failed for \(bsd)")
+                    hlog("[Helper] ⚠️ claim failed for \(bsd)")
                 }
             },
             ctx
@@ -110,7 +158,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         guard let desc = DADiskCopyDescription(disk) as? [String: Any],
               let bsd = desc[kDADiskDescriptionMediaBSDNameKey as String] as? String else { return }
         if claimedDisks.removeValue(forKey: bsd) != nil {
-            print("[Helper] disk \(bsd) disappeared — claim auto-released")
+            hlog("[Helper] disk \(bsd) disappeared — claim auto-released")
         }
     }
 
@@ -136,22 +184,22 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
                   shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
         newConnection.exportedInterface = NSXPCInterface(with: HelperProtocol.self)
         newConnection.exportedObject    = self
-        newConnection.invalidationHandler = { print("[Helper] connection invalidated") }
+        newConnection.invalidationHandler = { hlog("[Helper] connection invalidated") }
         newConnection.resume()
-        print("[Helper] accepted XPC connection")
+        hlog("[Helper] accepted XPC connection")
         return true
     }
 
     // MARK: - HelperProtocol
 
     func getVersion(reply: @escaping (String) -> Void) {
-        reply("Ext4Mounter Helper 1.2.2")
+        reply("Ext4Mounter Helper 1.2.5")
     }
 
     /// Open raw block device and send FD to the App via UNIX socket + SCM_RIGHTS.
-    /// Uses authopen to open the device — running from root context avoids password prompts.
+    /// Prefer direct root open(2). Fall back to authopen only if direct open fails.
     func openDiskDevice(devicePath: String, reply: @escaping (Bool, String) -> Void) {
-        print("[Helper] openDiskDevice: \(devicePath)")
+        hlog("[Helper] openDiskDevice: \(devicePath)")
 
         guard devicePath.hasPrefix("/dev/rdisk") || devicePath.hasPrefix("/dev/disk") else {
             reply(false, "Invalid device path (must be /dev/rdisk* or /dev/disk*)")
@@ -177,43 +225,70 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         let bsdShort = rawPath.replacingOccurrences(of: "/dev/rdisk", with: "disk")
                                .replacingOccurrences(of: "/dev/disk", with: "disk")
         if let claimed = claimedDisks[bsdShort] {
-            print("[Helper] releasing DADiskClaim for \(bsdShort) to allow direct open")
+            hlog("[Helper] releasing DADiskClaim for \(bsdShort) to allow direct open")
             DADiskUnclaim(claimed)
             claimedDisks.removeValue(forKey: bsdShort)
         }
 
-        // authopen でデバイスを開く（root から呼ぶためダイアログなし）
-        var sv: [Int32] = [0, 0]
-        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sv) == 0 else {
-            reply(false, "socketpair() failed: \(String(cString: strerror(errno)))")
-            return
-        }
-        let parentSock = sv[0]; let childSock = sv[1]
+        var fd = openDirectWithRetry(rawPath: rawPath)
+        if fd >= 0 {
+            hlog("[Helper] opened \(rawPath) → fd=\(fd) (direct root open)")
+        } else {
+            let openCode = errno
+            let openErr = String(cString: strerror(openCode))
+            hlog("[Helper] direct open failed for \(rawPath): errno=\(openCode) \(openErr) — falling back to authopen")
+            let roFD = open(rawPath, O_RDONLY)
+            let roOpenCode = errno
+            if roFD >= 0 {
+                hlog("[Helper] diagnostic: O_RDONLY open succeeded for \(rawPath) → fd=\(roFD)")
+                close(roFD)
+            } else {
+                hlog("[Helper] diagnostic: O_RDONLY open failed for \(rawPath): errno=\(roOpenCode) \(String(cString: strerror(roOpenCode)))")
+            }
 
-        let authTask = Process()
-        authTask.executableURL = URL(fileURLWithPath: "/usr/libexec/authopen")
-        authTask.arguments     = ["-stdoutpipe", "-o", "2", rawPath]
-        authTask.standardOutput = FileHandle(fileDescriptor: childSock, closeOnDealloc: false)
-        authTask.standardError  = FileHandle.standardError
-        do {
-            try authTask.run()
-        } catch {
-            close(parentSock); close(childSock)
-            reply(false, "authopen launch failed: \(error.localizedDescription)")
-            return
-        }
-        close(childSock)
+            var sv: [Int32] = [0, 0]
+            guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sv) == 0 else {
+                hlog("[Helper] socketpair failed before authopen: \(String(cString: strerror(errno)))")
+                reply(false, "socketpair() failed: \(String(cString: strerror(errno)))")
+                return
+            }
+            let parentSock = sv[0]
+            let childSock = sv[1]
 
-        let fd = receiveFDViaSCMRights(parentSock) ?? -1
-        authTask.waitUntilExit()
-        close(parentSock)
+            let authTask = Process()
+            authTask.executableURL = URL(fileURLWithPath: "/usr/libexec/authopen")
+            authTask.arguments = ["-stdoutpipe", "-o", "2", rawPath]
+            authTask.standardOutput = FileHandle(fileDescriptor: childSock, closeOnDealloc: false)
+            authTask.standardError = FileHandle.standardError
+            do {
+                try authTask.run()
+            } catch {
+                hlog("[Helper] authopen launch failed: \(error.localizedDescription)")
+                close(parentSock)
+                close(childSock)
+                reply(false, "authopen launch failed: \(error.localizedDescription)")
+                return
+            }
+            close(childSock)
 
-        guard fd >= 0, authTask.terminationStatus == 0 else {
-            if fd >= 0 { close(fd) }
-            reply(false, "authopen exit \(authTask.terminationStatus) for \(rawPath)")
-            return
+            fd = receiveFDViaSCMRights(parentSock) ?? -1
+            authTask.waitUntilExit()
+            close(parentSock)
+
+            guard fd >= 0, authTask.terminationStatus == 0 else {
+                hlog("[Helper] authopen failed for \(rawPath): exit=\(authTask.terminationStatus) fd=\(fd)")
+                if fd >= 0 { close(fd) }
+                if openCode == EPERM && roFD < 0 && roOpenCode == EPERM {
+                    let denialCode = HelperOpenDiskFailureCode.rawOpenDeniedPrefix + rawPath
+                    hlog("[Helper] raw open denied in helper context — returning \(denialCode)")
+                    reply(false, denialCode)
+                } else {
+                    reply(false, "authopen exit \(authTask.terminationStatus) for \(rawPath)")
+                }
+                return
+            }
+            hlog("[Helper] opened \(rawPath) → fd=\(fd) (via authopen fallback)")
         }
-        print("[Helper] opened \(rawPath) → fd=\(fd) (via authopen, root, no dialog)")
 
         // Create UNIX socket for FD transfer
         // ⑦修正: デバイスパスからユニークなソケット名を生成（複数同時マウント時の競合防止）
@@ -225,6 +300,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
 
         let serverSock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard serverSock >= 0 else {
+            hlog("[Helper] socket() failed for FD handoff: \(String(cString: strerror(errno)))")
             close(fd); reply(false, "socket() failed"); return
         }
 
@@ -243,13 +319,14 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         } == 0
 
         guard bindOK else {
+            hlog("[Helper] bind failed for \(socketPath): \(String(cString: strerror(errno)))")
             close(fd); close(serverSock)
             reply(false, "bind(\(socketPath)) failed: \(String(cString: strerror(errno)))")
             return
         }
 
         listen(serverSock, 1)
-        print("[Helper] FD socket ready at \(socketPath)")
+        hlog("[Helper] FD socket ready at \(socketPath)")
 
         // Notify App that the socket is ready — it should connect within 10 s
         reply(true, socketPath)
@@ -260,18 +337,119 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
 
         let clientSock = accept(serverSock, nil, nil)
         guard clientSock >= 0 else {
-            print("[Helper] accept timed out or failed")
+            hlog("[Helper] accept timed out or failed: \(String(cString: strerror(errno)))")
             close(fd); close(serverSock); return
         }
 
-        print("[Helper] App connected — sending FD \(fd) via SCM_RIGHTS")
+        hlog("[Helper] App connected — sending FD \(fd) via SCM_RIGHTS")
         sendFileDescriptor(fd, over: clientSock)
 
         close(clientSock)
         close(serverSock)
         close(fd)
         unlink(socketPath)
-        print("[Helper] FD transfer complete")
+        hlog("[Helper] FD transfer complete")
+    }
+
+    private func openDirectWithRetry(rawPath: String) -> Int32 {
+        let delaysUsec: [useconds_t] = [0, 50_000, 100_000, 150_000, 250_000]
+        for (index, delay) in delaysUsec.enumerated() {
+            if delay > 0 {
+                usleep(delay)
+            }
+            let fd = open(rawPath, O_RDWR)
+            if fd >= 0 {
+                if index > 0 {
+                    hlog("[Helper] direct open succeeded after retry \(index) for \(rawPath)")
+                }
+                return fd
+            }
+            let code = errno
+            hlog("[Helper] direct open attempt \(index + 1) failed for \(rawPath): errno=\(code) \(String(cString: strerror(code)))")
+        }
+        return -1
+    }
+
+    private func runTool(_ launchPath: String, _ arguments: [String]) -> (exitCode: Int32, output: String) {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: launchPath)
+        task.arguments = arguments
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+
+        do {
+            try task.run()
+        } catch {
+            return (127, "launch failed: \(error.localizedDescription)")
+        }
+
+        task.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return (task.terminationStatus, output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func mountedFileSystemType(at mountPoint: String) -> String? {
+        let result = runTool("/sbin/mount", [])
+        guard result.exitCode == 0 else { return nil }
+
+        let marker = " on \(mountPoint) ("
+        for line in result.output.split(separator: "\n") {
+            let text = String(line)
+            guard let range = text.range(of: marker) else { continue }
+            let suffix = text[range.upperBound...]
+            guard let end = suffix.firstIndex(of: ")") else { continue }
+            return String(suffix[..<end]).split(separator: ",").first.map(String.init)
+        }
+        return nil
+    }
+
+    private func isMounted(_ mountPoint: String) -> Bool {
+        mountedFileSystemType(at: mountPoint) != nil
+    }
+
+    private func openFilesSummary(for mountPoint: String) -> String {
+        let results = collectOpenFiles(on: mountPoint)
+        guard !results.isEmpty else { return "no open files detected" }
+        let preview = results.prefix(3).joined(separator: " | ")
+        if results.count > 3 {
+            return "\(results.count) open files: \(preview) | ..."
+        }
+        return "\(results.count) open files: \(preview)"
+    }
+
+    private func collectOpenFiles(on mountPoint: String) -> [String] {
+        let result = runTool("/usr/sbin/lsof", ["-n", "-P", "-F", "pcn"])
+        guard result.exitCode == 0 || !result.output.isEmpty else { return [] }
+
+        var entries: [String] = []
+        var currentCommand = ""
+        var seen = Set<String>()
+        for rawLine in result.output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = String(rawLine)
+            if line.hasPrefix("c") {
+                currentCommand = String(line.dropFirst())
+            } else if line.hasPrefix("n") {
+                let filePath = String(line.dropFirst())
+                guard filePath.hasPrefix(mountPoint) else { continue }
+                let entry = "\(currentCommand)  \(filePath)"
+                if seen.insert(entry).inserted {
+                    entries.append(entry)
+                }
+            }
+        }
+        return entries
+    }
+
+    private func waitUntilUnmounted(_ mountPoint: String, timeout: TimeInterval = 5.0) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !isMounted(mountPoint) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return !isMounted(mountPoint)
     }
 
     /// Mount NFS share as root via /sbin/mount_nfs.
@@ -353,33 +531,55 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         }
     }
 
-    /// Unmount via diskutil unmount force — same DiskArbitration path as Finder, works instantly.
+    /// Unmount NFS mount points as root.
+    /// NFS mounts are not DiskArbitration disks, so `/usr/sbin/diskutil unmount` is only a fallback.
     func unmountNFS(mountPoint: String, reply: @escaping (Bool, String) -> Void) {
-        print("[Helper] unmountNFS: \(mountPoint)")
+        hlog("[Helper] unmountNFS: \(mountPoint)")
 
         guard mountPoint.hasPrefix("/Volumes/") else {
             reply(false, "Invalid mount point: must be under /Volumes/")
             return
         }
 
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-        task.arguments = ["unmount", "force", mountPoint]
-        let pipe = Pipe()
-        task.standardOutput = pipe; task.standardError = pipe
-        do { try task.run() } catch {
-            reply(false, "diskutil launch failed: \(error.localizedDescription)"); return
-        }
-        task.waitUntilExit()
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let exitCode = task.terminationStatus
-        print("[Helper] diskutil unmount force exit=\(exitCode) output=[\(output.trimmingCharacters(in: .whitespacesAndNewlines))]")
-        if exitCode == 0 {
+        guard let fsType = mountedFileSystemType(at: mountPoint) else {
+            hlog("[Helper] unmountNFS: \(mountPoint) already gone")
             try? FileManager.default.removeItem(atPath: mountPoint)
-            reply(true, "Unmounted \(mountPoint)")
-        } else {
-            reply(false, "diskutil unmount force exit \(exitCode): \(output)")
+            reply(true, "Already unmounted \(mountPoint)")
+            return
         }
+
+        hlog("[Helper] unmountNFS: detected fsType=\(fsType)")
+
+        let attempts: [(String, [String])]
+        if fsType == "nfs" {
+            attempts = [
+                ("/usr/sbin/diskutil", ["unmount", "force", mountPoint]),
+                ("/sbin/umount", ["-f", mountPoint]),
+                ("/sbin/umount", [mountPoint]),
+            ]
+        } else {
+            attempts = [
+                ("/sbin/umount", ["-f", mountPoint]),
+                ("/sbin/umount", [mountPoint]),
+                ("/usr/sbin/diskutil", ["unmount", "force", mountPoint]),
+            ]
+        }
+
+        for (tool, arguments) in attempts {
+            let result = runTool(tool, arguments)
+            hlog("[Helper] unmount attempt: \(tool) \(arguments.joined(separator: " ")) exit=\(result.exitCode) output=[\(result.output)]")
+
+            if result.exitCode == 0, waitUntilUnmounted(mountPoint) {
+                try? FileManager.default.removeItem(atPath: mountPoint)
+                reply(true, "Unmounted \(mountPoint)")
+                return
+            }
+        }
+
+        let busySummary = openFilesSummary(for: mountPoint)
+        let stillMounted = isMounted(mountPoint)
+        hlog("[Helper] unmountNFS failed: mounted=\(stillMounted) \(busySummary)")
+        reply(false, "unmount failed for \(mountPoint): \(busySummary)")
     }
 
     /// Helper が DADiskClaim でクレーム済みか（= ext4 確認済みか）を返す。
@@ -393,42 +593,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
     /// root 権限で実行することで非 root 時のパーミッションタイムアウトを回避し高速動作する。
     func getOpenFilesOnMount(mountPoint: String, reply: @escaping ([String]) -> Void) {
         print("[Helper] getOpenFilesOnMount: \(mountPoint)")
-
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        task.arguments = ["-n", "-P", "-F", "pcn"]
-        let outPipe = Pipe()
-        task.standardOutput = outPipe
-        task.standardError  = Pipe()
-
-        guard (try? task.run()) != nil else { reply([]); return }
-
-        // タイムアウト保険（root では通常 1〜3 秒で完了）
-        DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
-            if task.isRunning { task.terminate() }
-        }
-        task.waitUntilExit()
-
-        let raw = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-
-        // -F pcn 出力: p<pid> / c<command> / n<filename> の繰り返し
-        var results: [String] = []
-        var currentCommand = ""
-        var seen = Set<String>()
-
-        for rawLine in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            let line = String(rawLine)
-            if line.hasPrefix("c") {
-                currentCommand = String(line.dropFirst())
-            } else if line.hasPrefix("n") {
-                let filePath = String(line.dropFirst())
-                guard filePath.hasPrefix(mountPoint) else { continue }
-                let entry = "\(currentCommand)  \(filePath)"
-                if seen.insert(entry).inserted {
-                    results.append(entry)
-                }
-            }
-        }
+        let results = collectOpenFiles(on: mountPoint)
         print("[Helper] getOpenFilesOnMount: found \(results.count) entries")
         reply(results)
     }

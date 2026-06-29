@@ -17,14 +17,52 @@ Ext4Mounter is a macOS menu bar app for mounting Linux ext4 volumes through an e
   - signing entitlements
   - local packaged app output is ignored from git
 - `docs/`
-  - project notes and development journal
+  - public design and release notes
 - `assets/`
   - icon sources and previews
 
 ## Status
 
 - Current tracked version: `v1.2.5`
-- Project is under active reorganization for public release
+- Public developer preview
+- External unmount reconciliation is implemented
+- Helper status is surfaced in the menu bar UI
+
+## Authentication model
+
+Ext4Mounter currently has two different privilege domains:
+
+- `PrivilegedHelper` for disk dialog suppression and host-side NFS mount/unmount
+- `authopen` for the actual raw ext4 device FD used by the VM
+
+What is expected today:
+
+- One-time helper installation or approval for a signed release build
+- One user authorization when a newly attached raw ext4 device is opened
+
+What is already reduced:
+
+- Re-mounting within the same attach session reuses the cached FD and skips Touch ID / password
+- External unmounts initiated from macOS are detected and reconciled automatically
+
+What cannot currently be removed in the VM architecture:
+
+- The raw disk open authorization for `/dev/rdisk*`
+
+Reason:
+
+- macOS denies raw block-device open from the root helper context on current systems
+- The app falls back to `authopen -extauth`, which is the working Apple-supplied path
+
+## Helper packaging
+
+The app bundle now carries:
+
+- `Contents/MacOS/com.ext4mounter.helper`
+- `Contents/Library/LaunchDaemons/com.ext4mounter.helper.plist`
+
+This is intended for `SMAppService`-based release packaging.
+For notarized releases placed in `/Applications`, the app can surface helper registration state and guide approval.
 
 ## Apple container roadmap
 
@@ -37,7 +75,22 @@ The near-term plan is to evaluate them for:
 
 The current VM-based mount path remains the primary implementation.
 
+See also:
+
+- `docs/containerization_integration_plan.md`
+- `THIRD_PARTY_LICENSES.md`
+
 ## Build notes
 
 The Swift package lives under `src/`.
 This repo currently keeps development notes and packaging files alongside the source tree.
+
+## Release notes
+
+Release packaging is scripted in:
+
+- `script/release_ext4mounter.sh`
+
+Distribution readiness notes live in:
+
+- `docs/release_readiness.md`

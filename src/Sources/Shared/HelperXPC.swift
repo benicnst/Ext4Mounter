@@ -1,5 +1,11 @@
 import Foundation
 
+public enum HelperOpenDiskFailureCode {
+    /// The privileged helper confirmed that raw disk open is denied in its launchd/root context.
+    /// The app should skip helper-based raw opens and use local authopen instead.
+    public static let rawOpenDeniedPrefix = "helper-raw-open-denied:"
+}
+
 /// XPC protocol for the privileged helper (com.ext4mounter.helper).
 /// The helper runs as root (LaunchDaemon) and performs privileged operations.
 @objc public protocol HelperProtocol {

@@ -40,6 +40,8 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
 
     private static var deviceFDCache: [String: Int32] = [:]
     private static let fdCacheLock = NSLock()
+    private static let helperCapabilityLock = NSLock()
+    private static var helperRawOpenUnavailable = false
 
     /// キャッシュに保存された FD を閉じて削除する。ドライブ抜去時に MountManager から呼ぶ。
     public static func invalidateFDCache(for rawPath: String) {
@@ -150,7 +152,10 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
         }
 
         // 1st: XPC helper に依頼
-        if fd < 0 {
+        let shouldTryHelperRawOpen = VZEngine.helperCapabilityLock.withLock {
+            !VZEngine.helperRawOpenUnavailable
+        }
+        if fd < 0 && shouldTryHelperRawOpen {
             let openSem = DispatchSemaphore(value: 0)
             var helperOK = false; var helperMsg = ""
             XPCHelperClient.shared.openDiskDevice(devicePath: rawPath) { ok, msg in
@@ -162,7 +167,15 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
             if helperOK {
                 fd = connectAndReceiveFD(socketPath: helperMsg)
                 elog("[VZEngine]   XPC path FD=\(fd)")
+            } else if helperMsg.hasPrefix(HelperOpenDiskFailureCode.rawOpenDeniedPrefix) {
+                VZEngine.helperCapabilityLock.withLock {
+                    VZEngine.helperRawOpenUnavailable = true
+                }
+                let deniedPath = String(helperMsg.dropFirst(HelperOpenDiskFailureCode.rawOpenDeniedPrefix.count))
+                elog("[VZEngine]   helper raw open denied by macOS for \(deniedPath) — future mounts will skip helper raw open")
             }
+        } else if fd < 0 {
+            elog("[VZEngine]   helper raw open previously marked unavailable — skipping helper path")
         }
 
         // 2nd: XPC 失敗 → アプリから直接 authopen（Touch ID ダイアログあり）
@@ -173,6 +186,34 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
 
         guard fd >= 0 else {
             fail(completion, "Stage 2 failed — could not open \(rawPath)"); return
+        }
+
+        do {
+            let info = try Ext4PreflightService.inspect(fileDescriptor: fd)
+            if let label = info.volumeLabel, !label.isEmpty {
+                let labelSafe = String(label.unicodeScalars.map { c -> Character in
+                    if CharacterSet(charactersIn: " ").contains(c) { return "_" }
+                    let extra = CharacterSet(charactersIn: "-_.")
+                    return (CharacterSet.alphanumerics.contains(c) || extra.contains(c)) ? Character(c) : "_"
+                }.prefix(64)).trimmingCharacters(in: CharacterSet(charactersIn: "_."))
+                let preferredHint = labelSafe.isEmpty ? hint : labelSafe
+                try? preferredHint.write(toFile: sharedDir + "/volname_hint.txt", atomically: true, encoding: .utf8)
+                elog("[VZEngine]   ext4 label preflight='\(label)' safeHint='\(preferredHint)'")
+            }
+            elog("[VZEngine]   ext4 preflight \(info.summaryLine)")
+            if !info.incompatFeatures.isEmpty {
+                elog("[VZEngine]   ext4 incompat=\(info.incompatFeatures.joined(separator: ", "))")
+            }
+            if !info.roCompatFeatures.isEmpty {
+                elog("[VZEngine]   ext4 ro-compat=\(info.roCompatFeatures.joined(separator: ", "))")
+            }
+            if info.compatibility == .readOnlyRecommended {
+                fail(completion,
+                     "Stage 2 failed — preflight marked this volume as read-only recommended (\(info.compatibility.userMessage))")
+                return
+            }
+        } catch {
+            elog("[VZEngine]   ext4 preflight unavailable after auth: \(error.localizedDescription)")
         }
 
         // 成功した FD を dup してキャッシュに保存（次回マウント時の Touch ID スキップ用）

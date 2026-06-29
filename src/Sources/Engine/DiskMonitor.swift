@@ -171,7 +171,9 @@ public class DiskMonitor {
             if let n = newName, !n.isEmpty, n != existing.volumeName {
                 let updated = Ext4Disk(id: existing.id, bsdName: bsd, devicePath: existing.devicePath,
                                        volumeName: n, size: existing.size,
-                                       mountPoint: existing.mountPoint, status: existing.status)
+                                       mountPoint: existing.mountPoint, status: existing.status,
+                                       preflight: existing.preflight,
+                                       activityNote: existing.activityNote)
                 disks[bsd] = updated
                 onDiskAppeared?(updated)
             }

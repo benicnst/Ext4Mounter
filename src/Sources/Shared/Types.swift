@@ -2,6 +2,91 @@ import Foundation
 
 // MARK: - Ext4Disk
 
+public struct Ext4Preflight {
+    public let volumeLabel: String?
+    public let uuid: String
+    public let blockSize: UInt32
+    public let hasJournal: Bool
+    public let compatFeatures: [String]
+    public let incompatFeatures: [String]
+    public let roCompatFeatures: [String]
+
+    public init(volumeLabel: String? = nil,
+                uuid: String,
+                blockSize: UInt32,
+                hasJournal: Bool,
+                compatFeatures: [String] = [],
+                incompatFeatures: [String] = [],
+                roCompatFeatures: [String] = []) {
+        self.volumeLabel = volumeLabel
+        self.uuid = uuid
+        self.blockSize = blockSize
+        self.hasJournal = hasJournal
+        self.compatFeatures = compatFeatures
+        self.incompatFeatures = incompatFeatures
+        self.roCompatFeatures = roCompatFeatures
+    }
+
+    public var summaryLine: String {
+        let label = volumeLabel ?? "-"
+        let journal = hasJournal ? "journal=yes" : "journal=no"
+        return "label=\(label) uuid=\(uuid) block=\(blockSize) \(journal)"
+    }
+
+    public var compatibility: Ext4Compatibility {
+        let incompat = Set(incompatFeatures)
+        let roCompat = Set(roCompatFeatures)
+
+        if incompat.contains("encrypt") ||
+            incompat.contains("inlineData") ||
+            incompat.contains("eaInode") ||
+            incompat.contains("dirdata") ||
+            incompat.contains("journalDev") ||
+            roCompat.contains("readonly") ||
+            roCompat.contains("bigalloc") ||
+            roCompat.contains("quota") ||
+            roCompat.contains("project") ||
+            roCompat.contains("hasSnapshot") ||
+            roCompat.contains("replica") {
+            return .readOnlyRecommended
+        }
+
+        if incompat.contains("mmp") || incompat.contains("largedir") {
+            return .caution
+        }
+
+        return .readWriteReady
+    }
+
+    public var uiStatusLine: String {
+        switch compatibility {
+        case .readWriteReady:
+            return "ext4 preflight: 書き込みマウント候補"
+        case .caution:
+            return "ext4 preflight: 注意が必要"
+        case .readOnlyRecommended:
+            return "ext4 preflight: 読み取り中心を推奨"
+        }
+    }
+}
+
+public enum Ext4Compatibility: String {
+    case readWriteReady
+    case caution
+    case readOnlyRecommended
+
+    public var userMessage: String {
+        switch self {
+        case .readWriteReady:
+            return "この ext4 ボリュームは通常の書き込みマウント候補です。"
+        case .caution:
+            return "この ext4 ボリュームは注意が必要です。マウント前に feature を確認してください。"
+        case .readOnlyRecommended:
+            return "この ext4 ボリュームは読み取り中心の扱いを推奨します。"
+        }
+    }
+}
+
 public struct Ext4Disk: Identifiable {
     public let id: UUID
     public let bsdName: String       // "disk4s1"
@@ -10,24 +95,35 @@ public struct Ext4Disk: Identifiable {
     public let size: UInt64          // bytes
     public let mountPoint: String?
     public let status: MountStatus
+    public let preflight: Ext4Preflight?
+    public let activityNote: String?
 
     public init(id: UUID = UUID(), bsdName: String, devicePath: String,
                 volumeName: String? = nil, size: UInt64,
-                mountPoint: String? = nil, status: MountStatus = .unmounted) {
+                mountPoint: String? = nil, status: MountStatus = .unmounted,
+                preflight: Ext4Preflight? = nil,
+                activityNote: String? = nil) {
         self.id = id; self.bsdName = bsdName; self.devicePath = devicePath
         self.volumeName = volumeName; self.size = size
         self.mountPoint = mountPoint; self.status = status
+        self.preflight = preflight
+        self.activityNote = activityNote
     }
 
-    public var displayName: String { volumeName ?? bsdName }
+    public var displayName: String { preflight?.volumeLabel ?? volumeName ?? bsdName }
 
     public var formattedSize: String {
         ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
     }
 
+    public var preflightStatusLine: String? {
+        preflight?.uiStatusLine
+    }
+
     /// ASCII-safe name for paths / process argv
     public var safeVolumeName: String {
-        let src = (volumeName?.isEmpty == false) ? volumeName! : bsdName
+        let preferredName = preflight?.volumeLabel ?? volumeName
+        let src = (preferredName?.isEmpty == false) ? preferredName! : bsdName
         let extra = CharacterSet(charactersIn: "-_.")
         let s = String(src.unicodeScalars.map { c -> Character in
             (CharacterSet.alphanumerics.contains(c) || extra.contains(c)) ? Character(c) : "_"

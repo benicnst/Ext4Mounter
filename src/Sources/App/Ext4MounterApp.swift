@@ -11,7 +11,7 @@ struct Ext4MounterApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(mountManager: appDelegate.mountManager)
+            MenuBarView(mountManager: appDelegate.mountManager, appDelegate: appDelegate)
         } label: {
             MenuBarIconView(mountManager: appDelegate.mountManager)
         }
@@ -74,19 +74,29 @@ struct MenuBarIconView: View {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let mountManager = MountManager()
+    @Published var helperStatusText = "ヘルパー: 確認中..."
+    @Published var helperNeedsAttention = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         EngineLog.shared.clear()
         elog("=== Ext4Mounter v1.2.5 started ===")
         elog("[App] log file: \(FileManager.default.homeDirectoryForCurrentUser.path)/Library/Logs/Ext4Mounter/engine.log")
 
-        // Ping the helper so it wakes from demand-start before the first mount attempt
-        XPCHelperClient.shared.ping { ok in
-            elog("[App] XPC helper ping: \(ok ? "OK" : "NOT RUNNING — install helper")")
-        }
+        refreshHelperStatus(attemptRegistration: true)
 
         mountManager.start()
         elog("[App] Disk monitoring started")
+    }
+
+    func refreshHelperStatus(attemptRegistration: Bool) {
+        HelperServiceManager.refreshStatus(attemptRegistration: attemptRegistration,
+                                           logger: { elog($0) }) { [weak self] snapshot in
+            DispatchQueue.main.async {
+                self?.helperStatusText = snapshot.statusText
+                self?.helperNeedsAttention = snapshot.needsAttention
+                elog("[App] \(snapshot.statusText)")
+            }
+        }
     }
 
     /// Return .terminateLater when there are active NFS mounts so macOS waits for
@@ -183,6 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 @available(macOS 14.0, *)
 struct MenuBarView: View {
     @ObservedObject var mountManager: MountManager
+    @ObservedObject var appDelegate: AppDelegate
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -206,6 +217,10 @@ struct MenuBarView: View {
                     DiskRow(disk: disk, mountManager: mountManager)
                 }
             }
+
+            Divider()
+
+            HelperStatusRow(appDelegate: appDelegate)
 
             Divider()
 
@@ -234,6 +249,19 @@ struct DiskRow: View {
         case .unmounted, .error:    return "マウント"
         case .mounted:              return "アンマウント"
         default:                    return ""
+        }
+    }
+
+    private var preflightColor: Color {
+        switch disk.preflight?.compatibility {
+        case .readWriteReady:
+            return .green
+        case .caution:
+            return .orange
+        case .readOnlyRecommended:
+            return .red
+        case nil:
+            return .secondary
         }
     }
 
@@ -267,6 +295,18 @@ struct DiskRow: View {
                 Text(disk.formattedSize + " · " + disk.bsdName)
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                if let preflight = disk.preflightStatusLine {
+                    Text(preflight)
+                        .font(.caption2)
+                        .foregroundColor(preflightColor)
+                        .lineLimit(1)
+                }
+                if let note = disk.activityNote, !note.isEmpty {
+                    Text(note)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer()
@@ -319,5 +359,28 @@ struct QuitRow: View {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture { NSApplication.shared.terminate(nil) }
+    }
+}
+
+@available(macOS 14.0, *)
+struct HelperStatusRow: View {
+    @ObservedObject var appDelegate: AppDelegate
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("ヘルパー")
+                .font(.callout)
+            Text(appDelegate.helperStatusText)
+                .font(.caption2)
+                .foregroundColor(appDelegate.helperNeedsAttention ? .orange : .secondary)
+                .lineLimit(2)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(isHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .onTapGesture { appDelegate.refreshHelperStatus(attemptRegistration: true) }
     }
 }
