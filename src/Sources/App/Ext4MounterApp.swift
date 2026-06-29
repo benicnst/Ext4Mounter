@@ -218,11 +218,10 @@ struct MenuBarView: View {
                 }
             }
 
-            Divider()
-
-            HelperStatusRow(appDelegate: appDelegate)
-
-            Divider()
+            if appDelegate.helperNeedsAttention {
+                Divider()
+                HelperStatusRow(appDelegate: appDelegate)
+            }
 
             // ── Quit ───────────────────────────────────────────────────────
             QuitRow()

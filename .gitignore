@@ -5,5 +5,7 @@ build/
 Package.resolved
 app/*.app
 app/*.dSYM
+dist/
+assets/AppIcon.iconset/
 *.xcuserstate
 *.swp
