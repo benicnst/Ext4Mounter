@@ -3,14 +3,13 @@ import PackageDescription
 
 let package = Package(
     name: "Ext4Mounter",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v26)],
     products: [
         .executable(name: "Ext4Mounter",       targets: ["App"]),
         .executable(name: "com.ext4mounter.helper", targets: ["PrivilegedHelper"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/containerization.git", from: "0.35.0"),
-        .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
     ],
     targets: [
         // Main SwiftUI App
@@ -25,7 +24,6 @@ let package = Package(
             dependencies: [
                 "Shared",
                 .product(name: "ContainerizationEXT4", package: "containerization"),
-                .product(name: "SystemPackage", package: "swift-system"),
             ],
             path: "Sources/Engine"
         ),
@@ -41,7 +39,6 @@ let package = Package(
             dependencies: ["Shared"],
             path: "Sources/PrivilegedHelper"
         ),
-    ]
-    ,
+    ],
     swiftLanguageModes: [.v5]
 )

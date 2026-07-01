@@ -5,7 +5,6 @@ import Darwin
 
 /// Orchestrates disk detection, VM-based mounting, and unmounting.
 /// Must be used on the main actor (SwiftUI-compatible ObservableObject).
-@available(macOS 14.0, *)
 @MainActor
 public final class MountManager: ObservableObject {
 
@@ -314,8 +313,6 @@ public final class MountManager: ObservableObject {
     // MARK: - Disk array mutation helper
 
     private func startPreflight(for disk: Ext4Disk) {
-        guard #available(macOS 15.0, *) else { return }
-
         let devicePath = preferredPreflightPath(for: disk.devicePath)
         let bsdName = disk.bsdName
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in

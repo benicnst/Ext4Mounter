@@ -165,16 +165,24 @@ public struct VMEngineConfig {
 
     public static var `default`: VMEngineConfig {
         let fm = FileManager.default
-        let bundle = Bundle.main.resourcePath ?? ""
+        let bundle = Bundle.main.resourceURL?.path ?? Bundle.main.resourcePath ?? ""
         let kn = "vmlinux-alpine-raw"
         let rn = "initramfs-alpine.gz"
+
+        let executableResourcePath = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources", isDirectory: true)
+            .path
+
         let candidates = [
             bundle,
+            executableResourcePath,
             "\(fm.currentDirectoryPath)/../Ext4Mounter.app/Contents/Resources",
             "\(fm.currentDirectoryPath)/Ext4Mounter.app/Contents/Resources",
             "\(fm.currentDirectoryPath)/../../app/Ext4Mounter.app/Contents/Resources",
-            "\(NSHomeDirectory())/Desktop/APP/Ext4Mounter/current/v1.2.5/app/Ext4Mounter.app/Contents/Resources",
-        ]
+        ].compactMap { $0 }.filter { !$0.isEmpty }
+
         let base = candidates.first {
             fm.fileExists(atPath: "\($0)/\(kn)") && fm.fileExists(atPath: "\($0)/\(rn)")
         } ?? bundle

@@ -325,7 +325,8 @@ if __name__ == "__main__":
     print(f"Preview: {preview}")
     icns = os.path.join(base, "AppIcon.icns")
     export_icns(icon, base, icns)
-    app_icns = os.path.join(base,"Ext4Mounter.app/Contents/Resources/AppIcon.icns")
+    app_icns = os.path.abspath(os.path.join(
+        base, "..", "app", "Ext4Mounter.app", "Contents", "Resources", "AppIcon.icns"))
     if os.path.exists(os.path.dirname(app_icns)):
         shutil.copy2(icns, app_icns)
         print(f"✓ Deployed: {app_icns}")

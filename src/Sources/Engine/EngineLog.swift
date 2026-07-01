@@ -30,9 +30,10 @@ public final class EngineLog {
     public func clear() {
         lock.lock(); defer { lock.unlock() }
         handle?.closeFile(); handle = nil
-        try? "".write(to: fileURL, atomically: true, encoding: .utf8)
+        rotateCurrentLogIfNeeded()
+        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
         openHandle()
-        raw("=== Ext4Mounter v1.2.5 engine log — session start ===")
+        raw("=== Ext4Mounter v1.2.6 engine log — session start ===")
     }
 
     // MARK: - Write
@@ -61,6 +62,18 @@ public final class EngineLog {
         }
         handle = try? FileHandle(forWritingTo: fileURL)
         handle?.seekToEndOfFile()
+    }
+
+    private func rotateCurrentLogIfNeeded() {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
+              let size = attrs[.size] as? NSNumber,
+              size.uint64Value > 0 else { return }
+
+        let previousURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("engine.previous.log")
+        try? fm.removeItem(at: previousURL)
+        try? fm.moveItem(at: fileURL, to: previousURL)
     }
 }
 

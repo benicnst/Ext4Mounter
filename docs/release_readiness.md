@@ -44,7 +44,7 @@ If `NOTARY_PROFILE` is omitted, the script signs and packages but skips notariza
 
 - The app bundle must be signed and notarized for distribution.
 - LaunchDaemons registered through `SMAppService` require admin approval in System Settings.
-- The app should live in `/Applications` for the LaunchDaemon registration flow.
+- `/Applications` is the recommended installed location for distribution. The app now re-syncs stale helper registration if a copied bundle is launched from a different path.
 
 ## Authentication reality
 

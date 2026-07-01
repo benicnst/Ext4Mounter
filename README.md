@@ -15,7 +15,10 @@ Ext4Mounter is a macOS menu bar app for mounting Linux ext4 volumes through an e
   - Swift package source
 - `app/`
   - signing entitlements
-  - local packaged app output is ignored from git
+  - local app-bundle template used by packaging scripts
+- `dist/`
+  - generated release or local validation artifacts
+  - ignored from git and safe to recreate
 - `docs/`
   - public design and release notes
 - `assets/`
@@ -23,7 +26,7 @@ Ext4Mounter is a macOS menu bar app for mounting Linux ext4 volumes through an e
 
 ## Status
 
-- Current tracked version: `v1.2.5`
+- Current tracked version: `v1.2.6`
 - Public developer preview
 - External unmount reconciliation is implemented
 - Helper status is surfaced in the menu bar UI
@@ -90,6 +93,9 @@ This repo currently keeps development notes and packaging files alongside the so
 Release packaging is scripted in:
 
 - `script/release_ext4mounter.sh`
+
+Without `DEVELOPER_ID_APPLICATION`, the script creates a local ad-hoc signed `dist/` artifact for validation only.
+With `DEVELOPER_ID_APPLICATION` and `NOTARY_PROFILE`, it creates the signed/notarized distribution artifact.
 
 Distribution readiness notes live in:
 

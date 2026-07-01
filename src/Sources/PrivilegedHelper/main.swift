@@ -3,7 +3,7 @@ import DiskArbitration
 import Darwin
 import Shared
 
-/// UltraExt4 Privileged Helper v1.2.5
+/// UltraExt4 Privileged Helper v1.2.6
 /// Adds root-level DiskArbitration approval callback to suppress the macOS
 /// "unreadable disk" dialog when Linux/ext4 drives are connected.
 /// Implements HelperProtocol via XPC MachService + SCM_RIGHTS FD passing.
@@ -23,7 +23,8 @@ final class HelperLog {
     func clear() {
         lock.lock()
         defer { lock.unlock() }
-        try? "".write(to: fileURL, atomically: true, encoding: .utf8)
+        rotateCurrentLogIfNeeded()
+        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
     }
 
     func write(_ message: String) {
@@ -33,8 +34,8 @@ final class HelperLog {
         let data = Data(line.utf8)
         if let handle = try? FileHandle(forWritingTo: fileURL) {
             defer { try? handle.close() }
-            try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
+            _ = try? handle.seekToEnd()
+            _ = try? handle.write(contentsOf: data)
         } else {
             try? data.write(to: fileURL)
         }
@@ -46,6 +47,18 @@ final class HelperLog {
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "HH:mm:ss.SSS"
         return fmt.string(from: Date())
+    }
+
+    private func rotateCurrentLogIfNeeded() {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
+              let size = attrs[.size] as? NSNumber,
+              size.uint64Value > 0 else { return }
+
+        let previousURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("helper.previous.log")
+        try? fm.removeItem(at: previousURL)
+        try? fm.moveItem(at: fileURL, to: previousURL)
     }
 }
 
@@ -61,6 +74,14 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
     private var listener: NSXPCListener?
     private var daSession: DASession?
     private var claimedDisks: [String: DADisk] = [:]
+    private lazy var expectedAppExecutablePath: String = {
+        let helperPath = processPath(pid: getpid()) ?? CommandLine.arguments[0]
+        return URL(fileURLWithPath: helperPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Ext4Mounter")
+            .standardizedFileURL
+            .path
+    }()
 
     func run() {
         HelperLog.shared.clear()
@@ -68,7 +89,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         listener?.delegate = self
         listener?.resume()
         setupDiskArbitration()
-        hlog("[Helper] v1.2.5 started (PID: \(getpid()))")
+        hlog("[Helper] v1.2.6 started (PID: \(getpid()))")
         RunLoop.main.run()
     }
 
@@ -182,18 +203,35 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
 
     func listener(_ listener: NSXPCListener,
                   shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
+        guard isAuthorizedClient(newConnection) else {
+            hlog("[Helper] rejected XPC connection pid=\(newConnection.processIdentifier) uid=\(newConnection.effectiveUserIdentifier)")
+            return false
+        }
         newConnection.exportedInterface = NSXPCInterface(with: HelperProtocol.self)
         newConnection.exportedObject    = self
         newConnection.invalidationHandler = { hlog("[Helper] connection invalidated") }
         newConnection.resume()
-        hlog("[Helper] accepted XPC connection")
+        hlog("[Helper] accepted XPC connection pid=\(newConnection.processIdentifier)")
         return true
+    }
+
+    private func isAuthorizedClient(_ connection: NSXPCConnection) -> Bool {
+        guard connection.effectiveUserIdentifier != 0 else { return false }
+        guard let clientPath = processPath(pid: connection.processIdentifier) else { return false }
+        return clientPath == expectedAppExecutablePath
+    }
+
+    private func processPath(pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return URL(fileURLWithPath: String(cString: buffer)).standardizedFileURL.path
     }
 
     // MARK: - HelperProtocol
 
     func getVersion(reply: @escaping (String) -> Void) {
-        reply("Ext4Mounter Helper 1.2.5")
+        reply("Ext4Mounter Helper 1.2.6")
     }
 
     /// Open raw block device and send FD to the App via UNIX socket + SCM_RIGHTS.
@@ -293,8 +331,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         // Create UNIX socket for FD transfer
         // ⑦修正: デバイスパスからユニークなソケット名を生成（複数同時マウント時の競合防止）
         let dir        = "/tmp/Ext4Mounter"
-        let devSuffix  = rawPath.replacingOccurrences(of: "/dev/", with: "").replacingOccurrences(of: "/", with: "_")
-        let socketPath = dir + "/helper_fd_\(devSuffix).sock"
+        let socketPath = dir + "/helper_fd_\(UUID().uuidString).sock"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         unlink(socketPath)
 
@@ -306,7 +343,7 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        socketPath.withCString { src in
+        _ = socketPath.withCString { src in
             withUnsafeMutablePointer(to: &addr.sun_path) { dst in
                 dst.withMemoryRebound(to: Int8.self, capacity: 104) { strcpy($0, src) }
             }
@@ -458,21 +495,21 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
                   reply: @escaping (Bool, String) -> Void) {
         print("[Helper] mountNFS \(host):\(port)\(exportPath) → \(mountPoint) opts=\(options)")
 
-        guard mountPoint.hasPrefix("/Volumes/") else {
-            reply(false, "Invalid mount point: must be under /Volumes/")
+        guard let safeMountPoint = validatedVolumeMountPoint(mountPoint) else {
+            reply(false, "Invalid mount point: must be /Volumes/<name>")
             return
         }
         // 127.0.0.1/localhost: 旧 vsock プロキシ経由（後方互換）
-        // 192.168.x.x / 10.x.x.x: VZ NAT 仮想ネットワーク（v11.0 以降の直接 TCP 経路）
+        // 192.168.64.x: VZ NAT 仮想ネットワーク（v11.0 以降の直接 TCP 経路）
         let isLocalhost = host == "127.0.0.1" || host == "localhost" || host == "::1"
-        let isVZNAT     = host.hasPrefix("192.168.") || host.hasPrefix("10.")
+        let isVZNAT     = host.hasPrefix("192.168.64.")
         guard isLocalhost || isVZNAT else {
             reply(false, "Only localhost or VZ NAT NFS mounts are allowed")
             return
         }
 
         do {
-            try FileManager.default.createDirectory(atPath: mountPoint,
+            try FileManager.default.createDirectory(atPath: safeMountPoint,
                                                     withIntermediateDirectories: true)
         } catch {
             reply(false, "Cannot create mount point: \(error.localizedDescription)")
@@ -491,12 +528,12 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
 
         let fullOptions = options.isEmpty ? "port=\(port)" : "\(options),port=\(port)"
         let nfsSource   = "\(host):\(exportPath)"
-        let cmd         = "/sbin/mount_nfs -o \(fullOptions) \(nfsSource) \(mountPoint)"
+        let cmd         = "/sbin/mount_nfs -o \(fullOptions) \(nfsSource) \(safeMountPoint)"
         print("[Helper] exec: \(cmd)")
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/sbin/mount_nfs")
-        task.arguments     = ["-o", fullOptions, nfsSource, mountPoint]
+        task.arguments     = ["-o", fullOptions, nfsSource, safeMountPoint]
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError  = pipe
@@ -523,10 +560,10 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         print("[Helper] mount_nfs exit=\(exitCode) output=[\(output.trimmingCharacters(in: .whitespacesAndNewlines))]")
 
         if exitCode == 0 {
-            reply(true, "Mounted at \(mountPoint)")
+            reply(true, "Mounted at \(safeMountPoint)")
         } else {
             // ⑧修正: マウント失敗時はマウントポイントディレクトリを削除（残留防止）
-            try? FileManager.default.removeItem(atPath: mountPoint)
+            try? FileManager.default.removeItem(atPath: safeMountPoint)
             reply(false, "mount_nfs exit \(exitCode): \(output)")
         }
     }
@@ -536,15 +573,15 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
     func unmountNFS(mountPoint: String, reply: @escaping (Bool, String) -> Void) {
         hlog("[Helper] unmountNFS: \(mountPoint)")
 
-        guard mountPoint.hasPrefix("/Volumes/") else {
-            reply(false, "Invalid mount point: must be under /Volumes/")
+        guard let safeMountPoint = validatedVolumeMountPoint(mountPoint) else {
+            reply(false, "Invalid mount point: must be /Volumes/<name>")
             return
         }
 
-        guard let fsType = mountedFileSystemType(at: mountPoint) else {
-            hlog("[Helper] unmountNFS: \(mountPoint) already gone")
-            try? FileManager.default.removeItem(atPath: mountPoint)
-            reply(true, "Already unmounted \(mountPoint)")
+        guard let fsType = mountedFileSystemType(at: safeMountPoint) else {
+            hlog("[Helper] unmountNFS: \(safeMountPoint) already gone")
+            try? FileManager.default.removeItem(atPath: safeMountPoint)
+            reply(true, "Already unmounted \(safeMountPoint)")
             return
         }
 
@@ -566,27 +603,29 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         }
 
         for (tool, arguments) in attempts {
-            let result = runTool(tool, arguments)
-            hlog("[Helper] unmount attempt: \(tool) \(arguments.joined(separator: " ")) exit=\(result.exitCode) output=[\(result.output)]")
+            let safeArguments = arguments.map { $0 == mountPoint ? safeMountPoint : $0 }
+            let result = runTool(tool, safeArguments)
+            hlog("[Helper] unmount attempt: \(tool) \(safeArguments.joined(separator: " ")) exit=\(result.exitCode) output=[\(result.output)]")
 
-            if result.exitCode == 0, waitUntilUnmounted(mountPoint) {
-                try? FileManager.default.removeItem(atPath: mountPoint)
-                reply(true, "Unmounted \(mountPoint)")
+            if result.exitCode == 0, waitUntilUnmounted(safeMountPoint) {
+                try? FileManager.default.removeItem(atPath: safeMountPoint)
+                reply(true, "Unmounted \(safeMountPoint)")
                 return
             }
         }
 
-        let busySummary = openFilesSummary(for: mountPoint)
-        let stillMounted = isMounted(mountPoint)
+        let busySummary = openFilesSummary(for: safeMountPoint)
+        let stillMounted = isMounted(safeMountPoint)
         hlog("[Helper] unmountNFS failed: mounted=\(stillMounted) \(busySummary)")
-        reply(false, "unmount failed for \(mountPoint): \(busySummary)")
+        reply(false, "unmount failed for \(safeMountPoint): \(busySummary)")
     }
 
-    /// Helper が DADiskClaim でクレーム済みか（= ext4 確認済みか）を返す。
-    func isClaimedDisk(bsdName: String, reply: @escaping (Bool) -> Void) {
-        let result = claimedDisks[bsdName] != nil
-        print("[Helper] isClaimedDisk \(bsdName) → \(result)")
-        reply(result)
+    private func validatedVolumeMountPoint(_ mountPoint: String) -> String? {
+        let url = URL(fileURLWithPath: mountPoint).standardizedFileURL
+        guard url.deletingLastPathComponent().path == "/Volumes" else { return nil }
+        let name = url.lastPathComponent
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else { return nil }
+        return url.path
     }
 
     /// `lsof -n -P -F pcn` を root で実行し mountPoint 配下のオープンファイルを返す。
@@ -637,21 +676,24 @@ final class Helper: NSObject, HelperProtocol, NSXPCListenerDelegate {
         defer { buf.deallocate() }
         memset(buf, 0, cmsgAlignedSize)
 
-        var dummy: UInt8 = 0x42
-        var iov  = iovec(iov_base: UnsafeMutableRawPointer(&dummy), iov_len: 1)
-        var msg  = msghdr()
-        msg.msg_iov        = UnsafeMutablePointer(&iov)
-        msg.msg_iovlen     = 1
-        msg.msg_control    = buf
-        msg.msg_controllen = socklen_t(cmsgAlignedSize)
-
         let cmsg = buf.assumingMemoryBound(to: cmsghdr.self)
         cmsg.pointee.cmsg_level = SOL_SOCKET
         cmsg.pointee.cmsg_type  = SCM_RIGHTS
         cmsg.pointee.cmsg_len   = socklen_t(cmsgSize)
         buf.advanced(by: MemoryLayout<cmsghdr>.size).storeBytes(of: fd, as: CInt.self)
 
-        let sent = sendmsg(socket, &msg, 0)
+        var dummy: UInt8 = 0x42
+        let sent: Int = withUnsafeMutablePointer(to: &dummy) { dummyPtr in
+            var iov = iovec(iov_base: UnsafeMutableRawPointer(dummyPtr), iov_len: 1)
+            return withUnsafeMutablePointer(to: &iov) { iovPtr in
+                var msg = msghdr()
+                msg.msg_iov        = iovPtr
+                msg.msg_iovlen     = 1
+                msg.msg_control    = buf
+                msg.msg_controllen = socklen_t(cmsgAlignedSize)
+                return sendmsg(socket, &msg, 0)
+            }
+        }
         if sent < 0 { print("[Helper] sendmsg failed: \(String(cString: strerror(errno)))") }
         else         { print("[Helper] FD \(fd) sent successfully") }
     }

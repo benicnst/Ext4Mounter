@@ -2,19 +2,18 @@ import Foundation
 import Shared
 import Virtualization
 
-/// VZEngine v1.2.5 — freeze-safe Alpine Linux VM via VZ.framework.
+/// VZEngine v1.2.6 — freeze-safe Alpine Linux VM via VZ.framework.
 ///
 /// Design goals vs v3.5:
 ///   • VZVirtualMachine runs on a dedicated background serial queue (no main-thread freeze).
 ///   • Mount orchestration runs on Thread.detachNewThread (blocking sleep is safe there).
 ///   • No RunLoop Timer on main thread.
-///   • NFSv3 over vsock — nfsd (guest vsock:5000→2049) + mountd (guest vsock:5001→32767).
+///   • NFSv3 over VZ NAT direct TCP — nfsd port 2049 + mountd port 32767.
 ///     NFSv3 has NO grace period, eliminating the freeze source entirely.
 ///     macOS mount_nfs uses port=/mountport= to bypass rpcbind.
 ///   • Device FD obtained via /usr/libexec/authopen (setuid-root, IOKit-privileged Apple binary).
 ///     authopen is used because even root XPC helpers cannot open raw block devices on macOS 14+
 ///     without special IOKit entitlements that only Apple-signed binaries have.
-@available(macOS 14.0, *)
 public final class VZEngine: NSObject, VZVirtualMachineDelegate {
 
     // MARK: - Private state
@@ -130,6 +129,11 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
         //   優先: XPC helper（root から authopen → パスワードなし）
         //   予備: アプリから直接 authopen（旧ヘルパーのまま or XPC 失敗時 → パスワードダイアログ）
         stage(2, 6, "Open device (via helper or authopen)")
+        guard waitForHelperAvailability(timeout: 3.0) else {
+            fail(completion, "Stage 2 failed — privileged helper is not running; approve the helper and retry")
+            return
+        }
+
         let rawPath = disk.devicePath.hasPrefix("/dev/disk")
                       ? disk.devicePath.replacingOccurrences(of: "/dev/disk", with: "/dev/rdisk")
                       : disk.devicePath
@@ -270,8 +274,8 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
             fail(completion, "Stage 4 failed — VM start: \(err.localizedDescription)"); return
         }
 
-        // Start CPUWatchdog with 10s grace period (allow Alpine kernel boot)
-        // Threshold 80%: only kill truly runaway CPU (infinite loop / hung kernel).
+        // Start app-process CPUWatchdog with 10s grace period (allow Alpine kernel boot).
+        // Threshold 80%: only kill runaway work inside the app process.
         // 15% would fire during normal Alpine boot (50–80% CPU is expected).
         let watchdog = CPUWatchdog(thresholdPct: 80.0, consecutiveLimit: 3)
         lock.withLock { _watchdog = watchdog }
@@ -339,6 +343,10 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
         if let raw = try? String(contentsOfFile: exportNamePath, encoding: .utf8) {
             let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if !s.isEmpty { exportName = s }
+        }
+        guard isSafeExportName(exportName) else {
+            fail(completion, "Stage 5 failed — unsafe export name from VM: \(exportName)")
+            return
         }
         let finalMountPoint = "/Volumes/" + exportName
         elog("[VZEngine]   exportName='\(exportName)' mountPoint=\(finalMountPoint)")
@@ -469,6 +477,37 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
 
     // MARK: - Device FD: XPC helper path + authopen fallback
 
+    private func waitForHelperAvailability(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var attempt = 0
+        while Date() < deadline {
+            attempt += 1
+            let sem = DispatchSemaphore(value: 0)
+            var helperOK = false
+            XPCHelperClient.shared.ping { ok in
+                helperOK = ok
+                sem.signal()
+            }
+            if sem.wait(timeout: .now() + 0.75) == .timedOut {
+                elog("[VZEngine] helper ping attempt \(attempt) timed out before raw disk auth")
+            } else if helperOK {
+                return true
+            } else {
+                elog("[VZEngine] helper ping attempt \(attempt) failed before raw disk auth")
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        elog("[VZEngine] helper unavailable before raw disk auth")
+        return false
+    }
+
+    private func isSafeExportName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.count <= 64 else { return false }
+        guard name != "." && name != ".." else { return false }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        return name.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
     /// Open raw block device.
     /// Authorization Services API で Ext4Mounter 名義のダイアログを表示してから
     /// authopen -extauth でデバイスを開く。ダイアログに "authopen" ではなく
@@ -595,7 +634,7 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        socketPath.withCString { src in
+        _ = socketPath.withCString { src in
             withUnsafeMutablePointer(to: &addr.sun_path) { dst in
                 dst.withMemoryRebound(to: Int8.self, capacity: 104) { strcpy($0, src) }
             }
@@ -697,7 +736,7 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
         )
         vmCfg.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)]
 
-        // NAT network (needed by Alpine apk etc., not for NFS which goes via vsock)
+        // NAT network: host mounts NFS directly from the guest's VZ NAT address.
         let net = VZVirtioNetworkDeviceConfiguration()
         net.attachment = VZNATNetworkDeviceAttachment()
         vmCfg.networkDevices = [net]

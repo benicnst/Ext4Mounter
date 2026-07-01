@@ -4,7 +4,6 @@ import Engine
 import Shared
 import ServiceManagement
 
-@available(macOS 14.0, *)
 @main
 struct Ext4MounterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -26,7 +25,6 @@ struct Ext4MounterApp: App {
 
 /// NSVisualEffectView wrapper for SwiftUI — provides the system blurred/translucent background
 /// used by all standard macOS menu bar panels (same as Spotlight, Control Center, etc.).
-@available(macOS 14.0, *)
 struct VisualEffectBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
@@ -42,7 +40,6 @@ struct VisualEffectBackground: NSViewRepresentable {
 
 /// ZStack + opacity keeps the same view structure at all times.
 /// Avoids the MenuBarExtra label disappearing bug when switching between icon types.
-@available(macOS 14.0, *)
 struct MenuBarIconView: View {
     @ObservedObject var mountManager: MountManager
 
@@ -70,7 +67,6 @@ struct MenuBarIconView: View {
 
 // MARK: - App Delegate
 
-@available(macOS 14.0, *)
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let mountManager = MountManager()
@@ -79,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         EngineLog.shared.clear()
-        elog("=== Ext4Mounter v1.2.5 started ===")
+        elog("=== Ext4Mounter v1.2.6 started ===")
         elog("[App] log file: \(FileManager.default.homeDirectoryForCurrentUser.path)/Library/Logs/Ext4Mounter/engine.log")
 
         refreshHelperStatus(attemptRegistration: true)
@@ -190,7 +186,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
 // MARK: - Menu Bar Window View
 
-@available(macOS 14.0, *)
 struct MenuBarView: View {
     @ObservedObject var mountManager: MountManager
     @ObservedObject var appDelegate: AppDelegate
@@ -198,7 +193,7 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // ── Header ─────────────────────────────────────────────────────
-            Text("Ext4Mounter v1.2.5")
+            Text("Ext4Mounter v1.2.6")
                 .font(.headline)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -233,7 +228,6 @@ struct MenuBarView: View {
 
 // MARK: - Disk Row
 
-@available(macOS 14.0, *)
 struct DiskRow: View {
     let disk: Ext4Disk
     @ObservedObject var mountManager: MountManager
@@ -339,7 +333,6 @@ struct DiskRow: View {
 
 // MARK: - Quit Row
 
-@available(macOS 14.0, *)
 struct QuitRow: View {
     @State private var isHovered = false
 
@@ -361,7 +354,6 @@ struct QuitRow: View {
     }
 }
 
-@available(macOS 14.0, *)
 struct HelperStatusRow: View {
     @ObservedObject var appDelegate: AppDelegate
     @State private var isHovered = false

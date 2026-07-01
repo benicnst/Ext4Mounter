@@ -30,7 +30,4 @@ public enum HelperOpenDiskFailureCode {
     /// reply: ["ProcessName  /Volumes/xxx/path", ...] 形式の文字列配列。
     func getOpenFilesOnMount(mountPoint: String, reply: @escaping ([String]) -> Void)
 
-    /// Helper が DADiskClaim でクレーム済みか（= ext4 確認済みか）を返す。
-    /// claimedDisks に bsdName が存在する → ext4、存在しない → ext4 でない。
-    func isClaimedDisk(bsdName: String, reply: @escaping (Bool) -> Void)
 }

@@ -2,7 +2,6 @@
 .build/
 build/
 .swiftpm/
-Package.resolved
 app/*.app
 app/*.dSYM
 dist/

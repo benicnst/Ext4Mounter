@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-/// Monitors process CPU usage every second (via getrusage).
+/// Monitors this app process's CPU usage every second (via getrusage).
 /// If the CPU usage delta exceeds `thresholdPct` percentage points per second
 /// for `consecutiveLimit` consecutive samples, calls `onExceeded` and should
 /// be stopped immediately.
@@ -10,12 +10,11 @@ import Darwin
 ///   watchdog.onExceeded = { pct in /* stop VM */ }
 ///   watchdog.start(afterDelay: 5.0)   // grace period before sampling starts
 ///   watchdog.stop()
-@available(macOS 13.0, *)
 final class CPUWatchdog {
 
     // MARK: - Config
 
-    /// Delta threshold: if CPU% rises more than this per second, trigger.
+    /// Delta threshold for this process: if CPU% rises more than this per second, trigger.
     let thresholdPct: Double
     /// How many consecutive over-threshold samples before triggering.
     let consecutiveLimit: Int
@@ -28,6 +27,7 @@ final class CPUWatchdog {
     private var lastWall: Double = -1
     private var overCount: Int   = 0
     private var triggered        = false
+    private var sampleCount      = 0
 
     // MARK: - Callback
 
@@ -55,7 +55,7 @@ final class CPUWatchdog {
 
     func stop() {
         timer?.cancel(); timer = nil
-        lastCPU = -1; lastWall = -1; overCount = 0; triggered = false
+        lastCPU = -1; lastWall = -1; overCount = 0; triggered = false; sampleCount = 0
         elog("[CPUWatchdog] stopped")
     }
 
@@ -64,7 +64,7 @@ final class CPUWatchdog {
     private func tick() {
         guard !triggered else { return }
 
-        // --- Measure cumulative CPU time (user + system) for this process ---
+        // Measure cumulative CPU time (user + system) for the app process.
         var ru = rusage()
         getrusage(RUSAGE_SELF, &ru)
         let cpu  = Double(ru.ru_utime.tv_sec)  + Double(ru.ru_utime.tv_usec)  / 1_000_000
@@ -79,8 +79,7 @@ final class CPUWatchdog {
 
         // CPU% per second (100% = one full core)
         let pct = (cpu - lastCPU) / elapsed * 100.0
-
-        elog(String(format: "[CPUWatchdog] cpu=%.1f%%/s", pct))
+        sampleCount += 1
 
         if pct > thresholdPct {
             overCount += 1
@@ -92,6 +91,9 @@ final class CPUWatchdog {
                 onExceeded?(pct)
             }
         } else {
+            if sampleCount == 1 || sampleCount % 30 == 0 {
+                elog(String(format: "[CPUWatchdog] cpu=%.1f%%/s", pct))
+            }
             overCount = 0   // reset consecutive counter on any normal sample
         }
     }

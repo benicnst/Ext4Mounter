@@ -4,7 +4,6 @@ import IOKit
 import Shared
 
 /// Detects ext4 disks via DiskArbitration + IOKit. Suppresses macOS "unreadable disk" dialogs.
-@available(macOS 13.0, *)
 public class DiskMonitor {
     private var session: DASession?
     private var disks: [String: Ext4Disk] = [:]

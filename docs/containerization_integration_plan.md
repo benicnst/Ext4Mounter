@@ -4,11 +4,11 @@
 
 Adopt Apple's `ContainerizationEXT4` in a way that improves Ext4Mounter on macOS 26 without destabilizing the current writable VM mount path.
 
-## implementation order
+## implementation status
 
 ### phase 1: read-only preflight
 
-Add a small host-side module that opens the candidate ext4 device and reads:
+Implemented with `ContainerizationEXT4`. The host-side module opens the candidate ext4 device and reads:
 
 - superblock
 - volume label
@@ -25,7 +25,7 @@ Expected output:
 
 ### phase 2: mount naming improvement
 
-Use ext4 label data from preflight as the primary naming source.
+Partially implemented. Ext4 label data from preflight is used as the preferred naming source.
 
 Priority order should become:
 
@@ -64,17 +64,11 @@ The safest architecture is hybrid:
 
 ## dependency rule
 
-Do not add the package to `Package.swift` until the first actual preflight code lands.
-
-Reason:
-
-- keeps the build stable while design is still changing
-- avoids raising the minimum toolchain requirement prematurely
-- keeps license and packaging work aligned with real source usage
+`ContainerizationEXT4` is now an active dependency because the preflight code has landed.
 
 ## release rule
 
-When the dependency is added for real:
+For every public release that includes `ContainerizationEXT4`:
 
 - update `THIRD_PARTY_LICENSES.md`
 - re-check upstream license files

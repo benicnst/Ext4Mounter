@@ -2,13 +2,11 @@ import Foundation
 import Engine
 import ServiceManagement
 
-@available(macOS 14.0, *)
 struct HelperServiceSnapshot {
     let statusText: String
     let needsAttention: Bool
 }
 
-@available(macOS 14.0, *)
 enum HelperServiceManager {
     static let machServiceName = "com.ext4mounter.helper"
     static let daemonPlistName = "com.ext4mounter.helper.plist"
@@ -16,7 +14,7 @@ enum HelperServiceManager {
     static func refreshStatus(attemptRegistration: Bool,
                               logger: @escaping (String) -> Void,
                               completion: @escaping (HelperServiceSnapshot) -> Void) {
-        XPCHelperClient.shared.ping { ok in
+        pingWithRetry(remainingAttempts: 4, logger: logger) { ok in
             if ok {
                 completion(HelperServiceSnapshot(statusText: "ヘルパー: 稼働中",
                                                  needsAttention: false))
@@ -25,6 +23,23 @@ enum HelperServiceManager {
 
             let snapshot = inspectRegistration(attemptRegistration: attemptRegistration, logger: logger)
             completion(snapshot)
+        }
+    }
+
+    private static func pingWithRetry(remainingAttempts: Int,
+                                      logger: @escaping (String) -> Void,
+                                      completion: @escaping (Bool) -> Void) {
+        XPCHelperClient.shared.ping { ok in
+            if ok || remainingAttempts <= 1 {
+                completion(ok)
+                return
+            }
+            logger("[HelperService] helper ping failed; retrying before service registration changes")
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
+                pingWithRetry(remainingAttempts: remainingAttempts - 1,
+                              logger: logger,
+                              completion: completion)
+            }
         }
     }
 
@@ -38,28 +53,70 @@ enum HelperServiceManager {
         }
 
         let initialStatus = snapshot(for: service.status)
-        if !attemptRegistration || service.status != .notRegistered {
+        logger("[HelperService] status=\(statusName(service.status)) bundle=\(Bundle.main.bundleURL.path)")
+        if attemptRegistration,
+           statusShouldResync(service.status) {
+            if let resynced = resyncEnabledService(service, logger: logger) {
+                return resynced
+            }
+        }
+
+        if !attemptRegistration || !statusCanRegister(service.status) {
             return initialStatus
         }
 
+        if let registered = registerService(service, logger: logger) {
+            return registered
+        }
+        return HelperServiceSnapshot(statusText: "ヘルパー: 自動登録失敗", needsAttention: true)
+    }
+
+    private static func statusCanRegister(_ status: SMAppService.Status) -> Bool {
+        switch status {
+        case .notRegistered, .notFound:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func statusShouldResync(_ status: SMAppService.Status) -> Bool {
+        switch status {
+        case .enabled, .requiresApproval:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func registerService(_ service: SMAppService,
+                                        logger: @escaping (String) -> Void) -> HelperServiceSnapshot? {
         do {
             try service.register()
-            let registered = snapshot(for: service.status)
             logger("[HelperService] register succeeded status=\(statusName(service.status))")
-            return registered
+            return snapshot(for: service.status)
         } catch {
             let nsError = error as NSError
             logger("[HelperService] register failed domain=\(nsError.domain) code=\(nsError.code) desc=\(nsError.localizedDescription)")
-
-            let prefix: String
-            if nsError.localizedDescription.localizedCaseInsensitiveContains("signature") {
-                prefix = "ヘルパー: 署名/公証済み配布版で登録可能"
-            } else if nsError.localizedDescription.localizedCaseInsensitiveContains("denied") {
-                prefix = "ヘルパー: システム設定で承認が必要"
-            } else {
-                prefix = "ヘルパー: 自動登録失敗"
+            if nsError.domain == "SMAppServiceErrorDomain", nsError.code == 1 {
+                return resyncEnabledService(service, logger: logger)
             }
-            return HelperServiceSnapshot(statusText: prefix, needsAttention: true)
+            return nil
+        }
+    }
+
+    private static func resyncEnabledService(_ service: SMAppService,
+                                             logger: @escaping (String) -> Void) -> HelperServiceSnapshot? {
+        do {
+            try service.unregister()
+            logger("[HelperService] removed stale helper registration")
+            try service.register()
+            logger("[HelperService] re-registered helper from \(Bundle.main.bundleURL.path) status=\(statusName(service.status))")
+            return snapshot(for: service.status)
+        } catch {
+            let nsError = error as NSError
+            logger("[HelperService] re-register failed domain=\(nsError.domain) code=\(nsError.code) desc=\(nsError.localizedDescription)")
+            return HelperServiceSnapshot(statusText: "ヘルパー: 再登録失敗", needsAttention: true)
         }
     }
 
@@ -84,12 +141,6 @@ enum HelperServiceManager {
                 needsAttention: true
             )
         case .notRegistered:
-            if !Bundle.main.bundleURL.path.hasPrefix("/Applications/") {
-                return HelperServiceSnapshot(
-                    statusText: "ヘルパー: /Applications 配置後に登録",
-                    needsAttention: true
-                )
-            }
             return HelperServiceSnapshot(statusText: "ヘルパー: 未登録", needsAttention: true)
         case .notFound:
             return HelperServiceSnapshot(

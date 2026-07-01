@@ -3,7 +3,6 @@ import Darwin
 import Foundation
 import Shared
 
-@available(macOS 15.0, *)
 enum Ext4PreflightService {
     static func inspect(devicePath: String) throws -> Ext4Preflight {
         let fd = open(devicePath, O_RDONLY)

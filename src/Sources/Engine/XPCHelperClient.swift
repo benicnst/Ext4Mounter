@@ -2,7 +2,6 @@ import Foundation
 import Shared
 
 /// Client for the privileged helper XPC service (com.ext4mounter.helper).
-@available(macOS 13.0, *)
 public final class XPCHelperClient {
     public static let shared = XPCHelperClient()
     private init() {}
@@ -90,25 +89,6 @@ public final class XPCHelperClient {
                 as? HelperProtocol else { completion([]); return }
         proxy.getOpenFilesOnMount(mountPoint: mountPoint) { files in
             conn.invalidate(); completion(files)
-        }
-    }
-
-    // MARK: - isClaimedDisk
-
-    /// Helper が ext4 確認済みとしてクレームしているか問い合わせる。
-    public func isClaimedDisk(bsdName: String, completion: @escaping (Bool) -> Void) {
-        let conn = makeConn()
-        let lock = NSLock(); var done = false
-        let once: (Bool) -> Void = { ok in
-            lock.lock(); defer { lock.unlock() }
-            guard !done else { return }; done = true; completion(ok)
-        }
-        conn.interruptionHandler = { once(false) }
-        conn.invalidationHandler = { once(false) }
-        guard let proxy = conn.remoteObjectProxyWithErrorHandler({ _ in once(false) })
-                as? HelperProtocol else { once(false); return }
-        proxy.isClaimedDisk(bsdName: bsdName) { result in
-            conn.invalidate(); once(result)
         }
     }
 

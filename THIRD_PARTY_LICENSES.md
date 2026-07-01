@@ -2,7 +2,7 @@
 
 This file records third-party license obligations for the current Ext4Mounter worktree.
 
-## Planned dependency: apple/containerization
+## Active dependency: apple/containerization
 
 Repository:
 
@@ -16,16 +16,19 @@ License:
 
 - Apache License 2.0
 
-Current intended use in Ext4Mounter:
+Current use in Ext4Mounter:
 
 - host-side ext4 preflight
 - ext4 feature inspection
+
+Planned future use:
+
 - read-only recovery/export tooling
 - ext4 test image generation
 
 ## Compliance notes
 
-If Ext4Mounter starts shipping code derived from or linked against `apple/containerization`, keep the following in the repository and/or release materials:
+Because Ext4Mounter links against `apple/containerization`, keep the following in the repository and/or release materials:
 
 - the Apache License 2.0 text
 - copyright notices
@@ -41,4 +44,4 @@ This is an open-source license compliance requirement, not a separate commercial
 
 ## Operational rule
 
-Before the first public release that includes `ContainerizationEXT4`, re-check upstream license files and add any missing third-party attribution files to the packaged app or release archive as needed.
+Before each public release that includes `ContainerizationEXT4`, re-check upstream license files and add any missing third-party attribution files to the packaged app or release archive as needed.
