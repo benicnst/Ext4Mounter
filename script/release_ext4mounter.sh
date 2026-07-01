@@ -86,6 +86,10 @@ fi
 
 echo "==> Creating zip archive"
 ditto -c -k --keepParent "$STAGE_APP" "$ZIP_PATH"
+(
+  cd "$DIST_DIR"
+  shasum -a 256 "$(basename "$ZIP_PATH")" > SHA256SUMS.txt
+)
 
 if [[ "$AD_HOC_SIGNING" == true ]]; then
   cat > "$DIST_DIR/README.txt" <<EOF
@@ -126,7 +130,8 @@ fi
 
 echo "==> Done"
 echo "App: $STAGE_APP"
-echo "Zip: $ZIP_PATH"
+  echo "Zip: $ZIP_PATH"
+echo "SHA256: $DIST_DIR/SHA256SUMS.txt"
 if [[ -n "$TEAM_ID" ]]; then
   echo "Team ID hint: $TEAM_ID"
 fi

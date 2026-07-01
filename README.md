@@ -100,3 +100,4 @@ With `DEVELOPER_ID_APPLICATION` and `NOTARY_PROFILE`, it creates the signed/nota
 Distribution readiness notes live in:
 
 - `docs/release_readiness.md`
+- `docs/unsigned_distribution.md`
