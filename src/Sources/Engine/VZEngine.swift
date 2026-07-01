@@ -367,7 +367,7 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
         //   - この組み合わせ（NFSv3 + anonuid=501）は今まで一度もテストしていない
         //
         // noowners を削除した理由（NFSv3 でも維持）:
-        //   anonuid=501 によりサーバーが uid=501 を返す → macOS が elefant (owner) と認識
+        //   anonuid=<host uid> によりサーバーがホストユーザーを owner として返す
         //   → ._* ファイル (mode 644) の変更・削除が可能
         //
         // locallocks: ロックをクライアントローカルで処理（rpc.statd 不要）
@@ -714,7 +714,7 @@ public final class VZEngine: NSObject, VZVirtualMachineDelegate {
         // /proc/cmdline 経由が確実。hint が空の場合はパラメータ自体を省略。
         let volnameParam = hint.isEmpty ? "" : " ext4_volname=\(hint)"
         // macOS ユーザーの UID/GID を渡す → init 側で anonuid/anongid に使う。
-        // getuid()/getgid() は実行ユーザーの値（例: elefant=501, staff=20）を返す。
+        // getuid()/getgid() は実行ユーザーの値を返す。
         let userUID = getuid()
         let userGID = getgid()
         boot.commandLine = "quiet loglevel=3\(volnameParam) nfs_uid=\(userUID) nfs_gid=\(userGID)"

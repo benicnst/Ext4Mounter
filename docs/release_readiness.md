@@ -35,7 +35,7 @@ Use:
 export DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)"
 export NOTARY_PROFILE="your-notary-profile"
 export TEAM_ID="TEAMID"
-/Users/elefant/Desktop/APP/Ext4Mounter/current/v1.2.5/script/release_ext4mounter.sh
+script/release_ext4mounter.sh
 ```
 
 If `NOTARY_PROFILE` is omitted, the script signs and packages but skips notarization.
