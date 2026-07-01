@@ -5,6 +5,18 @@ Ext4Mounter does not currently use a Developer ID certificate.
 That means public builds cannot be notarized and will not pass Gatekeeper's default assessment.
 This is an Apple platform limitation, not a packaging bug.
 
+## Distribution stance
+
+Ext4Mounter releases are published as developer previews.
+
+The expected flow is:
+
+1. Users verify the downloaded checksum.
+2. macOS Gatekeeper blocks or warns because the app is not notarized.
+3. Users who understand that limitation explicitly allow the app themselves.
+
+The project should be clear about this instead of trying to look like a notarized product.
+
 ## Supported no-budget paths
 
 ### 1. Build from source
@@ -36,14 +48,16 @@ Users should verify the checksum before opening the app:
 shasum -a 256 -c SHA256SUMS.txt
 ```
 
-macOS may still block the app because it is not notarized.
-Users who choose to run it must explicitly allow it in macOS security settings or remove the quarantine attribute themselves:
+macOS will likely block or warn about the app because it is not notarized.
+Users who choose to run it must explicitly allow it in macOS Security settings.
+
+Advanced users can also remove the quarantine attribute themselves:
 
 ```bash
 xattr -dr com.apple.quarantine Ext4Mounter.app
 ```
 
-This is less polished than Developer ID distribution, but it is the honest no-budget route.
+This is less polished than Developer ID distribution, but it is the chosen no-budget route.
 
 ## Not supported
 
